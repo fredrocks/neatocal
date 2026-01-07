@@ -1862,3 +1862,237 @@ function neatocal_render() {
 
   neatocal_post_process();
 }
+// --- Compact Calendar / candybar layout ---
+// Usage: ?layout=compact-calendar
+// Optional params (URL or data.param):
+//   compact_notes=true|false (default true)
+//   compact_notes_width="28%" (default 28%)
+//   compact_cell_height="10.5px" (default 10.5px)
+//   show_week_numbers=true|false (default true)
+
+function isoWeekInfo(date) {
+  // returns { year, week } ISO-8601 week/year
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  // Thursday in current week decides year
+  d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return { year: d.getUTCFullYear(), week };
+}
+
+function startOfISOWeek(year) {
+  // Monday of the ISO week that contains Jan 4
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const day = jan4.getUTCDay() || 7; // 1..7 (Mon..Sun)
+  jan4.setUTCDate(jan4.getUTCDate() - (day - 1));
+  return jan4; // Monday
+}
+
+function ymdUTC(d) {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function parseColorCell(param) {
+  const map = new Map();
+  const arr = (param && param.color_cell) ? param.color_cell : [];
+  for (const item of arr) {
+    if (item && item.date && item.color) map.set(item.date, item.color);
+  }
+  return map;
+}
+
+function renderCompactCalendar(param, dataObj) {
+  const year = Number(param.year);
+  const language = param.language || "en";
+  const weekendDays = (param.weekend_days ? String(param.weekend_days) : "0,6")
+    .split(",").map(x => Number(x.trim())).filter(x => Number.isFinite(x));
+  const highlightColor = param.highlight_color ? String(param.highlight_color) : "#eee";
+  const todayHighlight = param.today_highlight_color ? String(param.today_highlight_color) : null;
+
+  const showWeekNumbers = String(param.show_week_numbers || "false") === "true";
+  const showNotes = String(param.compact_notes ?? "true") === "true";
+  const notesWidth = String(param.compact_notes_width ?? "28%");
+  const cellHeight = String(param.compact_cell_height ?? "10.5px");
+
+  const colorMap = parseColorCell(param);
+
+  // Weekday headers: force Mon..Sun (David Seah style)
+  const weekdayNames = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(Date.UTC(2024, 0, 1 + i)); // arbitrary
+    // map i to Mon..Sun: 0=Mon ... 6=Sun
+    const monBased = new Date(Date.UTC(2024, 0, 1 + i));
+    weekdayNames.push(monBased.toLocaleDateString(language, { weekday: "short" }));
+  }
+
+  const monthNames = [];
+  for (let m = 0; m < 12; m++) {
+    const d = new Date(Date.UTC(year, m, 1));
+    monthNames.push(d.toLocaleDateString(language, { month: "short" }));
+  }
+
+  const firstWeekMonday = startOfISOWeek(year);
+  // last week row: ISO week containing Dec 28 is always last ISO week for a year
+  const dec28 = new Date(Date.UTC(year, 11, 28));
+  const last = isoWeekInfo(dec28).week;
+  const rows = last; // 52 or 53
+
+  // Precompute month boundary (first Monday on/after 1st-of-month, but we want vertical separators where month changes in the grid)
+  // We'll draw a thick LEFT border on cells whose date is the 1st of a month (except Jan), and also on header columns for those months.
+  const monthStartSet = new Set();
+  for (let m = 0; m < 12; m++) monthStartSet.add(`${year}-${String(m + 1).padStart(2, "0")}-01`);
+
+  // Build HTML
+  const root = document.getElementById("calendar");
+  root.className = "compact-calendar";
+  root.style.setProperty("--compact-notes-width", notesWidth);
+  root.style.setProperty("--compact-cell-height", cellHeight);
+
+  const wrap = document.createElement("div");
+  wrap.className = "compact-wrap";
+
+  const table = document.createElement("table");
+  table.className = "compact-grid";
+
+  // THEAD: weeknum + weekday names + (tiny month labels row above as in Seah)
+  const thead = document.createElement("thead");
+  const trHead = document.createElement("tr");
+
+  const thWeek = document.createElement("th");
+  thWeek.textContent = showWeekNumbers ? "Wk" : "";
+  thWeek.className = "cc-weeknum";
+  trHead.appendChild(thWeek);
+
+  for (let i = 0; i < 7; i++) {
+    const th = document.createElement("th");
+    th.textContent = weekdayNames[i];
+    trHead.appendChild(th);
+  }
+  thead.appendChild(trHead);
+
+  // Optional second header row: month labels placed roughly where the 1st of each month lands (Seah-like cue)
+  const trMonths = document.createElement("tr");
+  const thBlank = document.createElement("th");
+  thBlank.className = "cc-weeknum";
+  thBlank.textContent = "";
+  trMonths.appendChild(thBlank);
+
+  for (let i = 0; i < 7; i++) {
+    const th = document.createElement("th");
+    th.textContent = ""; // filled per-column below (kept blank; month boundaries in body do most of the work)
+    trMonths.appendChild(th);
+  }
+  thead.appendChild(trMonths);
+
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+
+  // Iterate week rows
+  for (let w = 1; w <= rows; w++) {
+    const tr = document.createElement("tr");
+
+    // week number cell
+    const tdW = document.createElement("td");
+    tdW.className = "cc-weeknum";
+    tdW.textContent = showWeekNumbers ? String(w) : "";
+    tr.appendChild(tdW);
+
+    // 7 days Mon..Sun
+    for (let dow = 0; dow < 7; dow++) {
+      const td = document.createElement("td");
+      td.className = "cc-day";
+
+      // date = firstWeekMonday + (w-1)*7 + dow
+      const d = new Date(firstWeekMonday);
+      d.setUTCDate(d.getUTCDate() + (w - 1) * 7 + dow);
+
+      const key = ymdUTC(d);
+
+      // only render within the target year; others are blank cells (Seah shows them empty)
+      const inYear = (d.getUTCFullYear() === year);
+
+      const dot = document.createElement("div");
+      dot.className = "cc-dot";
+
+      // weekend shading (Sun=0, Sat=6 in JS getUTCDay())
+      const jsDow = d.getUTCDay(); // 0..6
+      if (inYear && weekendDays.includes(jsDow)) {
+        dot.style.background = highlightColor;
+      }
+
+      // per-cell color override
+      if (inYear && colorMap.has(key)) {
+        dot.style.background = colorMap.get(key);
+      }
+
+      // month boundary: thick left border for month starts (except Jan)
+      if (inYear && key.endsWith("-01") && !key.startsWith(`${year}-01`)) {
+        td.classList.add("cc-month-sep");
+      }
+
+      // today outline
+      if (inYear && todayHighlight) {
+        const now = new Date();
+        const todayKey = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`;
+        if (key === todayKey) {
+          dot.style.background = todayHighlight;
+          td.classList.add("cc-today");
+        }
+      }
+
+      td.appendChild(dot);
+
+      // label (your JSON "YYYY-MM-DD": "text")
+      if (inYear && dataObj && typeof dataObj[key] === "string" && dataObj[key].trim().length) {
+        const lbl = document.createElement("div");
+        lbl.className = "cc-label";
+        lbl.textContent = dataObj[key];
+        td.appendChild(lbl);
+      }
+
+      // blank out-of-year cells
+      if (!inYear) {
+        dot.style.background = "transparent";
+      }
+
+      tr.appendChild(td);
+    }
+
+    tbody.appendChild(tr);
+  }
+
+  table.appendChild(tbody);
+
+  wrap.appendChild(table);
+
+  if (showNotes) {
+    const notes = document.createElement("div");
+    notes.className = "compact-notes";
+    const title = document.createElement("div");
+    title.className = "notes-title";
+    title.textContent = `${year}`;
+    const lines = document.createElement("div");
+    lines.className = "notes-lines";
+    notes.appendChild(title);
+    notes.appendChild(lines);
+    wrap.appendChild(notes);
+  }
+
+  root.innerHTML = "";
+  root.appendChild(wrap);
+}
+
+// --- Hook into your existing layout switch ---
+// Find wherever NeatoCal decides which layout to render (something like: if (layout==="default") ...)
+// Add:
+function maybeRenderCompact(param, dataObj) {
+  if (String(param.layout) === "compact-calendar") {
+    renderCompactCalendar(param, dataObj);
+    return true;
+  }
+  return false;
+}
