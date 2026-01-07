@@ -159,6 +159,11 @@ Misc
 
 Neatnik's original repo has [since moved](https://neatnik.net/dispenser/?project=calendar) but the legacy GitHub repo can be found [here](https://neatnik.net/dispenser/?project=calendar).
 
+Compact Calendar
+---
+https://github.com/fredrocks/neatocal?layout=compact-calendar&data=example/ie-co-2026.json
+https://github.io/fredrocks/neatocal?layout=compact-calendar&data=example/ie-co-2026.json
+
 License
 ---
 
